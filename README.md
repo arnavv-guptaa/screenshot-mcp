@@ -157,6 +157,42 @@ npm run crawl /dashboard
 npm run element ".hero-section" /homepage
 ```
 
+## 🧠 MCP Tool: Automated Screenshot Capture for AI Agents
+
+### Usage in Cursor (Model Context Protocol)
+
+1. **Add the MCP Tool**
+   - Place `mcp-screenshot.js` in your project root (already done).
+   - Make it executable:
+     ```bash
+     chmod +x mcp-screenshot.js
+     ```
+
+2. **Register the Tool in Cursor**
+   - In Cursor, open the Command Palette and search for "Add MCP Tool".
+   - Select the script:
+     ```
+     ./mcp-screenshot.js
+     ```
+   - Set the tool to accept a URL argument (e.g., `/features` or a full URL).
+
+3. **Run the Tool from Cursor**
+   - In chat, invoke the MCP tool and provide the page URL you want to capture.
+   - The tool will:
+     - Capture screenshots of the page using your existing screenshot logic
+     - Return the images directly to the AI agent as visible images in chat
+
+### Example
+```bash
+# From terminal (for testing)
+node mcp-screenshot.js http://localhost:3000/features
+```
+
+### Notes
+- The tool outputs images in the MCP-compatible format (base64-encoded, with mime type)
+- Works with any AI agent or platform that supports MCP tools and image input
+- Screenshots are saved in the `screenshots/` directory as usual
+
 ## License
 
 MIT License - see LICENSE file for details. 
