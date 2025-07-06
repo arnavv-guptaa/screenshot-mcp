@@ -1,0 +1,147 @@
+MCP SCREENSHOT TOOL - LLM USAGE GUIDE
+=======================================
+
+TOOL NAME: mcp_screenshot_screenshot
+
+BASIC USAGE:
+{"url": "https://example.com"}
+
+CRITICAL PARAMETERS:
+- url (string, REQUIRED): Target website URL
+- pageAnalysis (boolean): Set to true to extract page structure and elements
+- loginCredentials (object): Auto-login with username/password
+- interactions (array): Perform actions like click, fill, scroll
+- fullPage (boolean, default true): Capture full page screenshot
+- scrollScreenshots (boolean, default true): Capture scroll-based screenshots
+
+LOGIN FORMAT:
+{
+  "loginCredentials": {
+    "username": "user@example.com",
+    "password": "password123",
+    "loginUrl": "https://site.com/login"  // optional
+  }
+}
+
+INTERACTIONS FORMAT:
+{
+  "interactions": [
+    {"action": "click", "selector": ".button", "value": "Button Text", "screenshot": true},
+    {"action": "fill", "selector": "#input", "value": "text to type"},
+    {"action": "hover", "selector": ".menu-item"},
+    {"action": "select", "selector": "#dropdown", "value": "option1"},
+    {"action": "scroll", "selector": ".element"},
+    {"action": "wait", "value": "3000"}
+  ]
+}
+
+AVAILABLE ACTIONS:
+- click: Click on element
+- hover: Hover over element
+- fill: Type text in input field
+- select: Choose dropdown option
+- scroll: Scroll to element or position
+- wait: Pause for specified milliseconds
+
+ELEMENT DETECTION:
+The tool uses multiple strategies to find elements:
+1. Direct CSS selector
+2. Semantic locators (getByRole, getByText, getByLabel)
+3. Intelligent parsing (extracts IDs, classes, tags)
+4. Accessibility attributes (ARIA labels, titles)
+5. Fuzzy text matching
+
+BEST SELECTORS (most reliable first):
+1. data-testid attributes: [data-testid="login-button"]
+2. Unique IDs: #unique-id
+3. Semantic with value parameter: Use "value": "Button Text" for button clicks
+4. Stable classes: .btn-primary
+
+ESSENTIAL EXAMPLES:
+
+Basic screenshot:
+{"url": "https://example.com"}
+
+With page analysis (RECOMMENDED):
+{"url": "https://example.com", "pageAnalysis": true}
+
+With login:
+{
+  "url": "https://app.example.com/dashboard",
+  "loginCredentials": {"username": "user@example.com", "password": "password123"},
+  "pageAnalysis": true
+}
+
+Click button by text:
+{
+  "url": "https://example.com",
+  "interactions": [
+    {"action": "click", "selector": "button", "value": "Submit", "screenshot": true}
+  ]
+}
+
+Fill form and submit:
+{
+  "url": "https://example.com/contact",
+  "interactions": [
+    {"action": "fill", "selector": "#name", "value": "John Doe"},
+    {"action": "fill", "selector": "#email", "value": "john@example.com"},
+    {"action": "click", "selector": ".submit-btn", "screenshot": true}
+  ]
+}
+
+RETURN FORMAT:
+- Base64 PNG images with descriptive names
+- Page analysis JSON (if requested) containing:
+  * links: All clickable links with text and href
+  * buttons: Interactive buttons with text and selectors
+  * forms: Form elements and input fields
+  * navigation: Navigation menus
+  * hasModal: Boolean for popup detection
+  * scrollHeight: Page dimensions
+
+ERROR HANDLING:
+- Tool tries multiple strategies if elements not found
+- Continues with remaining interactions on failure
+- Returns debug screenshots on errors
+- Logs strategy used for successful element detection
+
+CRITICAL TIPS FOR LLMs:
+1. ALWAYS use "pageAnalysis": true when you need to understand page structure
+2. For button clicks, use "value" parameter with button text for better detection
+3. Add "screenshot": true to interactions to see results
+4. Include wait actions between interactions: {"action": "wait", "value": "2000"}
+5. Provide login credentials for protected pages
+6. Start with basic screenshot, then add complexity
+
+DEBUGGING FAILURES:
+1. Check pageAnalysis output to see available elements
+2. Try semantic selectors with value parameter
+3. Add wait time between interactions
+4. Use screenshot: true to see page state after each action
+
+LIMITATIONS:
+- Each call is independent (no session persistence)
+- May encounter CAPTCHAs on some sites
+- JavaScript-heavy sites may need additional wait times
+- Rate limiting may apply for repeated requests
+
+VIEWPORT CONFIGURATION:
+{
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  }
+}
+
+NAVIGATION FLOW (for multi-page exploration):
+{
+  "navigationFlow": {
+    "followLinks": ["nav a", ".menu-item"],
+    "maxDepth": 2,
+    "excludePatterns": ["/logout", "/delete"],
+    "screenshotEachPage": true
+  }
+}
+
+This tool provides comprehensive website screenshot and interaction capabilities with robust element detection and automatic fallback strategies. 

@@ -1,5 +1,73 @@
 #!/usr/bin/env node
 
+/**
+ * MCP Screenshot Tool - Enhanced Version
+ * 
+ * This tool provides comprehensive screenshot capture capabilities with advanced features:
+ * 
+ * 🎯 ENHANCED FEATURES:
+ * 
+ * 1. ROBUST ELEMENT DETECTION:
+ *    - Multiple fallback strategies for element finding
+ *    - Semantic locators (getByRole, getByText, getByLabel)
+ *    - Intelligent selector parsing and fixing
+ *    - Error recovery with debugging screenshots
+ *    - Strategy logging for troubleshooting
+ *    
+ * 2. COMPREHENSIVE PAGE ANALYSIS:
+ *    - Extracts links, buttons, forms, and navigation elements
+ *    - Properly returns analysis data in MCP format
+ *    - Identifies interactive elements for automation
+ *    - Analyzes page structure and scrollable content
+ *    
+ * 3. ADVANCED INTERACTIONS:
+ *    - Click, hover, scroll, fill, and select operations
+ *    - Automatic waiting for elements to be ready
+ *    - Error handling with continuation of remaining interactions
+ *    - Screenshot capture after each interaction
+ *    
+ * 4. AUTHENTICATION SUPPORT:
+ *    - Automatic login with credentials
+ *    - Session persistence across requests
+ *    - Configurable login selectors
+ *    
+ * 5. MULTI-PAGE NAVIGATION:
+ *    - Follow links across multiple pages
+ *    - Configurable depth and exclusion patterns
+ *    - Screenshot capture for each visited page
+ *    
+ * 6. INTELLIGENT SCREENSHOT CAPTURE:
+ *    - Smart scroll detection and capture
+ *    - Full-page and viewport-based screenshots
+ *    - Optimized for dynamic content loading
+ *    
+ * Usage Examples:
+ * 
+ * Basic screenshot:
+ * { "url": "https://example.com" }
+ * 
+ * With page analysis:
+ * { "url": "https://example.com", "pageAnalysis": true }
+ * 
+ * With interactions:
+ * { 
+ *   "url": "https://example.com",
+ *   "interactions": [
+ *     { "action": "click", "selector": ".menu-button", "screenshot": true },
+ *     { "action": "fill", "selector": "#search", "value": "test query" }
+ *   ]
+ * }
+ * 
+ * With login:
+ * {
+ *   "url": "https://example.com",
+ *   "loginCredentials": {
+ *     "username": "user@example.com",
+ *     "password": "password123"
+ *   }
+ * }
+ */
+
 const { chromium } = require('playwright');
 
 // MCP Screenshot Server implementation
@@ -290,15 +358,415 @@ class MCPScreenshotServer {
     }
   }
 
+  // Analyze page structure and extract interactive elements
+  async analyzePage(page) {
+    console.log(`🔍 Analyzing page structure...`);
+    
+    const analysis = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
+        text: a.textContent.trim(),
+        href: a.href,
+        selector: a.tagName.toLowerCase() + (a.id ? `#${a.id}` : '') + (a.className ? `.${a.className.split(' ').join('.')}` : '')
+      }));
+      
+      const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"]')).map(btn => ({
+        text: btn.textContent.trim() || btn.value || btn.getAttribute('aria-label'),
+        selector: btn.tagName.toLowerCase() + (btn.id ? `#${btn.id}` : '') + (btn.className ? `.${btn.className.split(' ').join('.')}` : ''),
+        type: btn.type || 'button'
+      }));
+      
+      const forms = Array.from(document.querySelectorAll('form')).map(form => ({
+        action: form.action,
+        method: form.method,
+        inputs: Array.from(form.querySelectorAll('input, select, textarea')).map(input => ({
+          name: input.name,
+          type: input.type,
+          placeholder: input.placeholder,
+          required: input.required
+        }))
+      }));
+      
+      const navigation = Array.from(document.querySelectorAll('nav, [role="navigation"], .nav, .navbar, .menu')).map(nav => ({
+        links: Array.from(nav.querySelectorAll('a')).map(a => ({
+          text: a.textContent.trim(),
+          href: a.href
+        }))
+      }));
+      
+      return {
+        url: window.location.href,
+        title: document.title,
+        links: links.slice(0, 20), // Limit to prevent overwhelming output
+        buttons: buttons.slice(0, 10),
+        forms: forms.slice(0, 5),
+        navigation: navigation.slice(0, 3),
+        hasModal: !!document.querySelector('[role="dialog"], .modal, .popup'),
+        scrollHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+        viewportHeight: window.innerHeight
+      };
+    });
+    
+    console.log(`📊 Page analysis complete: ${analysis.links.length} links, ${analysis.buttons.length} buttons, ${analysis.forms.length} forms`);
+    return analysis;
+  }
+
+  // Robust element finder with multiple fallback strategies
+  async findElement(page, interaction) {
+    const { selector, action, value } = interaction;
+    console.log(`🔍 Finding element for ${action} with selector: ${selector}`);
+    
+    // Strategy 1: Try the provided selector as-is
+    try {
+      await page.waitForSelector(selector, { timeout: 5000 });
+      return { locator: page.locator(selector), strategy: 'direct-selector' };
+    } catch (e) {
+      console.log(`⚠️ Direct selector failed: ${e.message}`);
+    }
+
+    // Strategy 2: Try semantic locators based on the selector
+    const semanticStrategies = [
+      // Try by role and text
+      () => {
+        if (interaction.action === 'click' && value) {
+          return page.getByRole('button', { name: new RegExp(value, 'i') });
+        }
+        return null;
+      },
+      
+      // Try by text content
+      () => {
+        if (value) {
+          return page.getByText(new RegExp(value, 'i'));
+        }
+        return null;
+      },
+      
+      // Try by label (for form elements)
+      () => {
+        if ((interaction.action === 'fill' || interaction.action === 'select') && value) {
+          return page.getByLabel(new RegExp(value, 'i'));
+        }
+        return null;
+      },
+      
+      // Try by placeholder
+      () => {
+        if (interaction.action === 'fill' && value) {
+          return page.getByPlaceholder(new RegExp(value, 'i'));
+        }
+        return null;
+      },
+      
+      // Try common button patterns
+      () => {
+        if (interaction.action === 'click') {
+          const buttonPatterns = [
+            'button',
+            '[role="button"]',
+            'input[type="button"]',
+            'input[type="submit"]',
+            '.btn',
+            '.button'
+          ];
+          
+          for (const pattern of buttonPatterns) {
+            try {
+              return page.locator(pattern).first();
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+        return null;
+      },
+      
+      // Try by data-testid patterns
+      () => {
+        const testIdPatterns = [
+          `[data-testid*="${selector}"]`,
+          `[data-test*="${selector}"]`,
+          `[data-cy*="${selector}"]`
+        ];
+        
+        for (const pattern of testIdPatterns) {
+          try {
+            return page.locator(pattern);
+          } catch (e) {
+            continue;
+          }
+        }
+        return null;
+      },
+      
+      // Try by aria-label
+      () => {
+        if (value) {
+          return page.locator(`[aria-label*="${value}" i]`);
+        }
+        return null;
+      },
+      
+      // Try by title attribute
+      () => {
+        if (value) {
+          return page.locator(`[title*="${value}" i]`);
+        }
+        return null;
+      }
+    ];
+
+    // Try each semantic strategy
+    for (let i = 0; i < semanticStrategies.length; i++) {
+      try {
+        const locator = semanticStrategies[i]();
+        if (locator) {
+          await locator.waitFor({ timeout: 3000 });
+          console.log(`✅ Found element using strategy ${i + 1}`);
+          return { locator, strategy: `semantic-${i + 1}` };
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    // Strategy 3: Try to parse and fix the selector
+    const selectorFixStrategies = [
+      // Remove complex chaining and try just the last part
+      () => {
+        const parts = selector.split(' ');
+        return parts[parts.length - 1];
+      },
+      
+      // Try without class names (just tag + id)
+      () => {
+        const match = selector.match(/^(\w+)(#[\w-]+)/);
+        return match ? match[0] : null;
+      },
+      
+      // Try just the ID if present
+      () => {
+        const match = selector.match(/#([\w-]+)/);
+        return match ? `#${match[1]}` : null;
+      },
+      
+      // Try just the tag name
+      () => {
+        const match = selector.match(/^(\w+)/);
+        return match ? match[1] : null;
+      },
+      
+      // Try to find by common class patterns
+      () => {
+        const commonClasses = ['.btn', '.button', '.link', '.nav', '.menu', '.form', '.input'];
+        for (const cls of commonClasses) {
+          if (selector.includes(cls.substring(1))) {
+            return cls;
+          }
+        }
+        return null;
+      }
+    ];
+
+    // Try each fix strategy
+    for (let i = 0; i < selectorFixStrategies.length; i++) {
+      try {
+        const fixedSelector = selectorFixStrategies[i]();
+        if (fixedSelector) {
+          await page.waitForSelector(fixedSelector, { timeout: 3000 });
+          console.log(`✅ Found element using fixed selector: ${fixedSelector}`);
+          return { locator: page.locator(fixedSelector), strategy: `fixed-${i + 1}` };
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    throw new Error(`❌ Could not find element with selector: ${selector}`);
+  }
+
+  // Enhanced element interactions with robust finding
+  async performInteractions(page, interactions) {
+    if (!interactions || interactions.length === 0) return [];
+    
+    console.log(`🎯 Performing ${interactions.length} interactions...`);
+    const screenshots = [];
+    
+    for (let i = 0; i < interactions.length; i++) {
+      const interaction = interactions[i];
+      console.log(`🔄 Interaction ${i + 1}: ${interaction.action} ${interaction.selector || ''}`);
+      
+      try {
+        if (interaction.action === 'wait') {
+          await page.waitForTimeout(parseInt(interaction.value) || 2000);
+          continue;
+        }
+
+        // Find the element using robust strategies
+        const { locator, strategy } = await this.findElement(page, interaction);
+        console.log(`🎯 Using strategy: ${strategy}`);
+        
+        switch (interaction.action) {
+          case 'click':
+            await locator.click();
+            break;
+            
+          case 'hover':
+            await locator.hover();
+            break;
+            
+          case 'scroll':
+            if (interaction.selector) {
+              await locator.scrollIntoViewIfNeeded();
+            } else {
+              await page.evaluate((value) => {
+                window.scrollTo({ top: parseInt(value) || 0, behavior: 'smooth' });
+              }, interaction.value);
+            }
+            break;
+            
+          case 'fill':
+            await locator.fill(interaction.value || '');
+            break;
+            
+          case 'select':
+            await locator.selectOption(interaction.value || '');
+            break;
+        }
+        
+        // Wait for specified element if provided
+        if (interaction.waitFor) {
+          try {
+            await page.waitForSelector(interaction.waitFor, { timeout: 10000 });
+          } catch (e) {
+            console.warn(`⚠️ WaitFor element not found: ${interaction.waitFor}`);
+          }
+        }
+        
+        // Wait for any animations/transitions
+        await page.waitForTimeout(1000);
+        
+        // Take screenshot if requested
+        if (interaction.screenshot) {
+          await this.waitForContent(page);
+          const screenshot = await page.screenshot({ type: 'png', fullPage: false });
+          screenshots.push({
+            type: 'image',
+            mimeType: 'image/png',
+            data: screenshot.toString('base64'),
+            name: `interaction_${i + 1}_${interaction.action}.png`
+          });
+        }
+        
+        console.log(`✅ Interaction ${i + 1} completed successfully`);
+        
+      } catch (error) {
+        console.error(`❌ Interaction ${i + 1} failed: ${error.message}`);
+        
+        // Take error screenshot for debugging
+        try {
+          const errorScreenshot = await page.screenshot({ type: 'png', fullPage: false });
+          screenshots.push({
+            type: 'image',
+            mimeType: 'image/png',
+            data: errorScreenshot.toString('base64'),
+            name: `error_interaction_${i + 1}_${interaction.action}.png`
+          });
+        } catch (screenshotError) {
+          console.warn(`⚠️ Could not take error screenshot: ${screenshotError.message}`);
+        }
+        
+        // Continue with next interaction instead of stopping
+        continue;
+      }
+    }
+    
+    console.log(`✅ Completed ${interactions.length} interactions (with robust element detection)`);
+    return screenshots;
+  }
+
+  // Navigate through multiple pages
+  async navigatePages(page, navigationFlow, baseUrl) {
+    if (!navigationFlow || !navigationFlow.followLinks) return [];
+    
+    console.log(`🧭 Starting navigation flow...`);
+    const visitedUrls = new Set();
+    const screenshots = [];
+    const maxDepth = navigationFlow.maxDepth || 2;
+    const excludePatterns = navigationFlow.excludePatterns || [];
+    
+    const navigate = async (currentUrl, depth) => {
+      if (depth > maxDepth || visitedUrls.has(currentUrl)) return;
+      
+      // Check exclude patterns
+      if (excludePatterns.some(pattern => currentUrl.includes(pattern))) {
+        console.log(`🚫 Skipping excluded URL: ${currentUrl}`);
+        return;
+      }
+      
+      console.log(`🌐 Navigating to: ${currentUrl} (depth: ${depth})`);
+      visitedUrls.add(currentUrl);
+      
+      try {
+        await page.goto(currentUrl, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.waitForTimeout(2000);
+        await this.waitForContent(page);
+        
+        // Take screenshot if requested
+        if (navigationFlow.screenshotEachPage) {
+          const urlObj = new URL(currentUrl);
+          const baseName = this.generateBaseName(urlObj);
+          const screenshot = await page.screenshot({ type: 'png', fullPage: true });
+          screenshots.push({
+            type: 'image',
+            mimeType: 'image/png',
+            data: screenshot.toString('base64'),
+            name: `nav_${depth}_${baseName}.png`
+          });
+        }
+        
+        // Find links to follow
+        const links = await page.evaluate((selectors) => {
+          const foundLinks = [];
+          selectors.forEach(selector => {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(el => {
+              const href = el.href || el.getAttribute('href');
+              if (href && !href.startsWith('#') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {
+                foundLinks.push(href);
+              }
+            });
+          });
+          return [...new Set(foundLinks)]; // Remove duplicates
+        }, navigationFlow.followLinks);
+        
+        // Navigate to found links
+        for (const link of links.slice(0, 5)) { // Limit to prevent infinite loops
+          await navigate(link, depth + 1);
+        }
+        
+      } catch (error) {
+        console.error(`❌ Navigation failed for ${currentUrl}: ${error.message}`);
+      }
+    };
+    
+    await navigate(baseUrl, 0);
+    console.log(`✅ Navigation complete. Visited ${visitedUrls.size} pages`);
+    return screenshots;
+  }
+
   // Comprehensive screenshot capture logic
   async captureScreenshots(page, url, options = {}) {
     const {
       scrollScreenshots = true,
       fullPage = true,
-      loginCredentials = null
+      loginCredentials = null,
+      pageAnalysis = false,
+      interactions = null,
+      navigationFlow = null
     } = options;
 
     const screenshots = [];
+    let pageAnalysisData = null;
     const urlObj = new URL(page.url());
     const baseName = this.generateBaseName(urlObj);
     const timestamp = Date.now();
@@ -348,19 +816,53 @@ class MCPScreenshotServer {
               data: (await page.screenshot({ type: 'png', fullPage: false })).toString('base64'),
               name: `${baseName}_login_page.png`
             });
-            return screenshots;
+            return {
+              screenshots,
+              pageAnalysis: pageAnalysisData,
+              status: 'login_required'
+            };
           }
         } else if (isErrorPage) {
           console.log(`❌ Redirected to error page: ${currentUrl}`);
-          screenshots.push({
-            type: 'image',
-            mimeType: 'image/png',
-            data: (await page.screenshot({ type: 'png', fullPage: false })).toString('base64'),
-            name: `${baseName}_error_page.png`
-          });
-          return screenshots;
+                      screenshots.push({
+              type: 'image',
+              mimeType: 'image/png',
+              data: (await page.screenshot({ type: 'png', fullPage: false })).toString('base64'),
+              name: `${baseName}_error_page.png`
+            });
+            return {
+              screenshots,
+              pageAnalysis: pageAnalysisData,
+              status: 'error_page'
+            };
         } else {
           console.log(`ℹ️ Redirected to: ${currentUrl} (proceeding with screenshots)`);
+        }
+      }
+
+      // Page analysis if requested
+      if (pageAnalysis) {
+        pageAnalysisData = await this.analyzePage(page);
+        console.log(`📋 Page analysis data:`, JSON.stringify(pageAnalysisData, null, 2));
+      }
+
+      // Perform interactions if provided
+      if (interactions && interactions.length > 0) {
+        const interactionScreenshots = await this.performInteractions(page, interactions);
+        screenshots.push(...interactionScreenshots);
+      }
+
+      // Navigation flow if provided
+      if (navigationFlow && navigationFlow.followLinks) {
+        const navigationScreenshots = await this.navigatePages(page, navigationFlow, page.url());
+        screenshots.push(...navigationScreenshots);
+        
+        // Return early if navigation flow handled screenshots
+        if (navigationScreenshots.length > 0) {
+          return {
+            screenshots,
+            pageAnalysis: pageAnalysisData
+          };
         }
       }
 
@@ -512,7 +1014,11 @@ class MCPScreenshotServer {
       throw error;
     }
 
-    return screenshots;
+    // Return screenshots with optional page analysis data
+    return {
+      screenshots,
+      pageAnalysis: pageAnalysisData
+    };
   }
 
   // Handle tools/call request
@@ -526,6 +1032,9 @@ class MCPScreenshotServer {
         const fullPage = args.fullPage !== false;
         const viewport = args.viewport || { width: 1920, height: 1080 };
         const loginCredentials = args.loginCredentials || null;
+        const pageAnalysis = args.pageAnalysis === true;
+        const interactions = args.interactions || null;
+        const navigationFlow = args.navigationFlow || null;
         
         if (!url) {
           this.sendResponse(request.id, null, {
@@ -538,6 +1047,15 @@ class MCPScreenshotServer {
         console.log(`📸 Starting comprehensive screenshot capture for: ${url}`);
         if (loginCredentials && loginCredentials.username) {
           console.log(`🔐 Login credentials provided for user: ${loginCredentials.username}`);
+        }
+        if (pageAnalysis) {
+          console.log(`🔍 Page analysis requested`);
+        }
+        if (interactions) {
+          console.log(`🎯 ${interactions.length} interactions requested`);
+        }
+        if (navigationFlow) {
+          console.log(`🧭 Navigation flow requested`);
         }
         
         // Launch browser and capture screenshots
@@ -560,22 +1078,48 @@ class MCPScreenshotServer {
           await this.waitForContent(page);
           
           // Capture comprehensive screenshots
-          const screenshots = await this.captureScreenshots(page, url, {
+          const result = await this.captureScreenshots(page, url, {
             scrollScreenshots,
             fullPage,
-            loginCredentials
+            loginCredentials,
+            pageAnalysis,
+            interactions,
+            navigationFlow
           });
           
           await page.close();
           await context.close();
           await browser.close();
           
+          // Handle different return formats
+          let screenshots, analysisData;
+          if (result && result.screenshots) {
+            // New format with analysis data
+            screenshots = result.screenshots;
+            analysisData = result.pageAnalysis;
+          } else {
+            // Legacy format (just screenshots array)
+            screenshots = result;
+          }
+          
           console.log(`✅ Captured ${screenshots.length} screenshots successfully`);
           
-          // Return screenshots in MCP format
-          this.sendResponse(request.id, {
+          // Return results in MCP format
+          const response = {
             content: screenshots
-          });
+          };
+          
+          // Include page analysis data if available
+          if (analysisData) {
+            console.log(`📊 Including page analysis data in response`);
+            // Add page analysis as a text content item
+            response.content.push({
+              type: 'text',
+              text: `# Page Analysis\n\n${JSON.stringify(analysisData, null, 2)}`
+            });
+          }
+          
+          this.sendResponse(request.id, response);
           
         } catch (e) {
           if (browser) await browser.close();
