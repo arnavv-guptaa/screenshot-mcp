@@ -1,198 +1,152 @@
-# Screen Capture Tool
+# MCP Screenshot Tool for Cursor
 
-A powerful AI-powered web application screenshot tool with authentication support, intelligent crawling, and comprehensive page analysis.
+A powerful AI-powered screenshot tool designed specifically for Cursor IDE, enabling AI agents to capture and analyze web pages intelligently.
 
 ## Features
 
-- 🧠 **AI-Powered Analysis** - Uses AI to understand page structure and detect tabs
-- 🔐 **Authentication Support** - Automatic login handling for protected pages
-- 🕷️ **Intelligent Crawling** - Discovers and captures all pages in your application
-- 📸 **Smart Screenshots** - Scroll-based and full-page captures with tab detection
-- 💾 **Session Persistence** - Saves browser sessions for faster subsequent runs
-- 🎯 **Flexible Configuration** - Highly configurable for different use cases
+- 🤖 **AI-First Design** - Built for AI agents to understand and interact with web pages
+- 🔐 **Authentication Support** - Handles login flows automatically
+- 📊 **Smart Content Analysis** - Detects and captures dynamic content, tabs, and interactive elements
+- 📸 **Comprehensive Capture** - Takes full-page, scrolling, and element-specific screenshots
+- ⚡ **Intelligent Waiting** - Adapts to page content and ensures proper rendering
 
-## Quick Start
+## Setup in Cursor
 
-### 1. Install Dependencies
+1. **Clone Repository**
 ```bash
+git clone https://github.com/arnavv-guptaa/screenshot-mcp.git
+cd mcp-screenshot
 npm install
 ```
 
-### 2. Setup Configuration (Optional)
-Copy the example configuration and customize it:
-```bash
-npm run setup
-```
+2. **Configure MCP Server**
+   1. Open Cursor Settings
+   2. Navigate to "Tools & Integration"
+   3. Click "New MCP Server"
+   4. Add the following configuration (replace the paths with your local clone path):
+   ```json
+   {
+     "mcpServers": {
+       "screenshot": {
+         "type": "local",
+         "command": "node",
+         "args": ["/Users/username/path/to/screenshot-mcp/mcp-screenshot.js"],
+         "cwd": "/Users/username/path/to/screenshot-mcp"
+       }
+     }
+   }
+   ```
+   5. Save the configuration
+   6. Verify that "1 tool enabled" appears in the MCP server status
+   7. Make sure the MCP server is active (toggle if needed)
 
-Edit `screenshot-config.json` with your settings:
-- Update `baseUrl` to your application URL
-- Add your OpenRouter API key for AI features (optional)
-- Configure authentication credentials if needed
-
-### 3. Run Screenshots
-
-#### Fast Page Capture (Default - No AI)
-```bash
-npm run page http://localhost:3000/features
-```
-
-#### AI-Powered Page Capture
-```bash
-npm run page:ai http://localhost:3000/features
-# or
-npm run page http://localhost:3000/features --ai
-```
-
-#### Fast Site Crawling
-```bash
-npm run crawl
-```
-
-#### AI-Powered Site Crawling
-```bash
-npm run crawl:ai
-# or
-npm run crawl --ai
-```
-
-#### Capture Protected Pages
-```bash
-npm run crawl http://localhost:3000/dashboard
-```
-
-## Configuration
-
-### Authentication Setup
+3. **Configure Authentication (Optional)**
+Create `screenshot-config.json` in your cloned repository:
 ```json
 {
   "authentication": {
     "required": true,
-    "loginUrl": "http://localhost:3000/login",
     "credentials": {
-      "username": "your-email@example.com",
-      "password": "your-password",
-      "usernameSelector": "#email",
-      "passwordSelector": "#password",
-      "submitSelector": "button[type='submit']"
+      "username": "your-username",
+      "password": "your-password"
     }
   }
 }
 ```
 
-### AI Configuration
-```json
-{
-  "ai": {
-    "enabled": true,
-    "openrouterApiKey": "your-api-key-here",
-    "model": "deepseek/deepseek-chat-v3-0324:free"
-  }
-}
+## Usage Guide for AI Agents
+
+### Basic Screenshot
+Simply provide the URL to capture:
+```
+@https://example.com
+Can you take a screenshot of this page?
 ```
 
-## Commands
+### Authentication Required
+For protected pages, provide credentials:
+```
+@https://app.example.com/dashboard
+Can you capture this page? Here are the credentials:
+username: user@example.com
+password: pass123
+```
 
-### Core Commands
-- `npm run page [url]` - Capture a single page
-- `npm run crawl [url]` - Crawl and capture all pages
-- `npm run element <selector> [url]` - Capture specific element
-- `npm run region <x,y,w,h> [url]` - Capture specific region
+### Dynamic Content
+The tool automatically:
+- Waits for content to load
+- Detects and captures tabs
+- Handles lazy-loaded content
+- Ensures charts and data are rendered
 
-### Element Shortcuts
-- `npm run nav [url]` - Navigation screenshots
-- `npm run header [url]` - Header screenshots
-- `npm run footer [url]` - Footer screenshots
-- `npm run hero [url]` - Hero section screenshots
+Example:
+```
+@https://app.example.com/analytics
+Can you capture all tabs in the analytics dashboard?
+```
 
-## Output
+### Element Specific
+Capture specific components:
+```
+@https://example.com/pricing
+Can you capture just the pricing table?
+```
 
-Screenshots are saved to the `screenshots/` directory with the following naming convention:
-- `001_page_scroll_0_top_timestamp.png` - Top of page
-- `002_page_scroll_1_800px_timestamp.png` - Scrolled sections
-- `003_page_fullpage_timestamp.png` - Full page
-- `004_page_ai_tab_tabname_timestamp.png` - AI-detected tabs
+## Best Practices for Users
 
-## Security Notes
+1. **Authentication**
+   - Provide credentials when requesting protected pages
+   - Mention if there's a specific login flow
 
-- The `.gitignore` file excludes sensitive files like `screenshot-config.json`
-- Browser sessions and authentication data are not tracked
-- Use environment variables for API keys in production
+2. **Dynamic Content**
+   - Let the agent know about interactive elements
+   - Mention if specific tabs or sections need focus
 
-## Troubleshooting
+3. **Performance**
+   - Allow time for complex pages to load
+   - Mention if certain elements need special attention
 
-### Login Issues
-- Verify selectors in configuration match your login form
-- Check if the login page URL is correct
-- Ensure credentials are valid
+## Capabilities
 
-### AI Analysis Issues
-- Verify your OpenRouter API key is valid
-- Check if the AI model is available
-- The tool falls back to manual detection if AI fails
-
-### Browser Issues
-- Clear `browser-session/` directory if browser gets stuck
-- Increase timeout values for slow-loading pages
-- Use `headless: true` for server environments
+The tool can:
+- Handle single-page applications (SPAs)
+- Navigate and capture multiple tabs
+- Wait for dynamic content to load
+- Capture specific elements
+- Handle various authentication flows
+- Analyze page structure
+- Detect and interact with UI components
 
 ## Examples
 
-### Capture Features Page with Scrolling
-```bash
-npm run page /features
+1. **Basic Page Capture**
+```
+Can you take a screenshot of https://example.com?
 ```
 
-### Crawl Entire Application
-```bash
-npm run crawl
+2. **Protected Dashboard**
+```
+Can you capture https://app.example.com/dashboard?
+Login credentials:
+user: admin@example.com
+pass: admin123
 ```
 
-### Capture Dashboard After Login
-```bash
-npm run crawl /dashboard
+3. **Multi-Tab Interface**
+```
+Can you capture all tabs on https://app.example.com/settings?
+Make sure to wait for each tab's content to load.
 ```
 
-### Capture Specific Element
-```bash
-npm run element ".hero-section" /homepage
+4. **Complex Data Views**
+```
+Can you capture the analytics dashboard at https://app.example.com/analytics?
+Please ensure all charts are fully rendered.
 ```
 
-## 🧠 MCP Tool: Automated Screenshot Capture for AI Agents
+## Notes
 
-### Usage in Cursor (Model Context Protocol)
-
-1. **Add the MCP Tool**
-   - Place `mcp-screenshot.js` in your project root (already done).
-   - Make it executable:
-     ```bash
-     chmod +x mcp-screenshot.js
-     ```
-
-2. **Register the Tool in Cursor**
-   - In Cursor, open the Command Palette and search for "Add MCP Tool".
-   - Select the script:
-     ```
-     ./mcp-screenshot.js
-     ```
-   - Set the tool to accept a URL argument (e.g., `/features` or a full URL).
-
-3. **Run the Tool from Cursor**
-   - In chat, invoke the MCP tool and provide the page URL you want to capture.
-   - The tool will:
-     - Capture screenshots of the page using your existing screenshot logic
-     - Return the images directly to the AI agent as visible images in chat
-
-### Example
-```bash
-# From terminal (for testing)
-node mcp-screenshot.js http://localhost:3000/features
-```
-
-### Notes
-- The tool outputs images in the MCP-compatible format (base64-encoded, with mime type)
-- Works with any AI agent or platform that supports MCP tools and image input
-- Screenshots are saved in the `screenshots/` directory as usual
-
-## License
-
-MIT License - see LICENSE file for details. 
+- The tool automatically handles most scenarios without special configuration
+- Screenshots are processed and displayed directly in the Cursor chat
+- The tool adapts its waiting strategy based on page content
+- Authentication sessions are managed automatically
