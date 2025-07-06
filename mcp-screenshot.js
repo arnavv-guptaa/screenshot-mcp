@@ -73,6 +73,29 @@ const { chromium } = require('playwright');
 // MCP Screenshot Server implementation
 class MCPScreenshotServer {
   constructor() {
+    this.name = 'mcp-screenshot';
+    this.version = '1.0.0';
+    this.description = 'Comprehensive screenshot capture with advanced login and interaction capabilities';
+    
+    // Performance optimizations
+    this.browserPool = new Map(); // Pool of persistent browser instances
+    this.sessionCache = new Map(); // Cache authenticated sessions
+    this.contextPool = new Map(); // Pool of browser contexts
+    this.maxPoolSize = 3; // Maximum concurrent browser instances
+    this.sessionTTL = 30 * 60 * 1000; // 30 minutes session cache
+    this.browserTTL = 10 * 60 * 1000; // 10 minutes browser idle timeout
+    
+    // Performance monitoring
+    this.performanceStats = {
+      totalRequests: 0,
+      cacheHits: 0,
+      browserReuse: 0,
+      averageResponseTime: 0
+    };
+    
+    // Cleanup timers
+    this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 60000);
+
     this.tools = {
       screenshot: {
         name: 'screenshot',
@@ -226,8 +249,8 @@ class MCPScreenshotServer {
         tools: {}
       },
       serverInfo: {
-        name: 'screenshot-mcp-server',
-        version: '2.0.0'
+        name: this.name,
+        version: this.version
       }
     };
     this.sendResponse(request.id, response);
@@ -264,31 +287,378 @@ class MCPScreenshotServer {
     return name || 'page';
   }
 
-  // Wait for content to load properly
-  async waitForContent(page) {
-    try {
-      // Wait for loading indicators to disappear
-      await page.waitForFunction(() => {
-        const loadingElements = document.querySelectorAll('[class*="loading"], [class*="spinner"], [class*="skeleton"], [class*="placeholder"]');
-        return loadingElements.length === 0 || Array.from(loadingElements).every(el => 
-          getComputedStyle(el).display === 'none' || getComputedStyle(el).opacity === '0'
-        );
-      }, { timeout: 5000 });
-    } catch (e) {}
+  // Optimized content loading with smart detection and early exit
+  async waitForContent(page, fastMode = false) {
+    console.log(`⏱️ [DEBUG] waitForContent started (fastMode: ${fastMode})`);
+    const waitStart = Date.now();
 
-    try {
-      // Wait for images to load
-      await page.waitForFunction(() => {
-        const images = Array.from(document.querySelectorAll('img'));
-        return images.every(img => img.complete);
-      }, { timeout: 8000 });
-    } catch (e) {}
+    // First, determine page type and complexity
+    const pageInfo = await page.evaluate(() => {
+      return {
+        // Check for data-heavy elements
+        hasCharts: !!document.querySelector('canvas, svg'),
+        hasDataTables: !!document.querySelector('table, [role="grid"]'),
+        hasDynamicContent: !!document.querySelector('[data-loading], [data-dynamic]'),
+        
+        // Check for critical content areas
+        mainContent: document.querySelector('main, [role="main"], #content')?.innerHTML.length || 0,
+        
+        // Count interactive elements
+        interactiveElements: document.querySelectorAll('button, input, select, [role="button"]').length,
+        
+        // Check for real-time data indicators
+        hasRealtimeData: !!document.querySelector('[data-realtime], [data-live]'),
+        
+        // Get viewport and document dimensions
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight
+        },
+        documentHeight: Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight
+        )
+      };
+    });
 
-    // Additional wait for animations
-    await page.waitForTimeout(1000);
+    console.log(`📊 [DEBUG] Page analysis:`, pageInfo);
+
+    // Determine waiting strategy based on page type
+    const isDataHeavyPage = pageInfo.hasCharts || pageInfo.hasDataTables || pageInfo.hasRealtimeData;
+    const isInteractivePage = pageInfo.interactiveElements > 10;
+    const isLongPage = pageInfo.documentHeight > pageInfo.viewport.height * 2;
+
+    // Define content readiness checks based on page type
+    const readinessChecks = {
+      // Basic content check - always required
+      basicContent: page.waitForFunction(() => {
+        const main = document.querySelector('main, [role="main"], #content');
+        return main && main.children.length > 0;
+      }, { timeout: 5000 }).catch(() => true),
+
+      // Data elements check - for data-heavy pages
+      dataElements: isDataHeavyPage ? page.waitForFunction(() => {
+        // Check if charts are rendered
+        const charts = Array.from(document.querySelectorAll('canvas, svg'));
+        const chartsReady = charts.every(chart => {
+          const box = chart.getBoundingClientRect();
+          return box.width > 0 && box.height > 0;
+        });
+
+        // Check if tables have data
+        const tables = Array.from(document.querySelectorAll('table, [role="grid"]'));
+        const tablesReady = tables.every(table => table.rows.length > 0);
+
+        return chartsReady && tablesReady;
+      }, { timeout: 8000 }).catch(() => true) : Promise.resolve(true),
+
+      // Interactive elements check - for interactive pages
+      interactiveElements: isInteractivePage ? page.waitForFunction(() => {
+        const elements = document.querySelectorAll('button, input, select, [role="button"]');
+        return Array.from(elements).every(el => {
+          const style = getComputedStyle(el);
+          return style.display !== 'none' && !el.disabled;
+        });
+      }, { timeout: 5000 }).catch(() => true) : Promise.resolve(true),
+
+      // Loading indicators check
+      noLoading: page.waitForFunction(() => {
+        const loadingEls = document.querySelectorAll('[class*="loading"], [class*="spinner"], [data-loading="true"]');
+        return Array.from(loadingEls).every(el => {
+          const style = getComputedStyle(el);
+          return style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0';
+        });
+      }, { timeout: 5000 }).catch(() => true)
+    };
+
+    // Wait strategy based on page type and mode
+    if (fastMode) {
+      // In fast mode, wait for basic content and no loading indicators
+      await Promise.race([
+        Promise.all([readinessChecks.basicContent, readinessChecks.noLoading]),
+        new Promise(resolve => setTimeout(resolve, 2000))
+      ]);
+    } else if (isDataHeavyPage) {
+      // For data-heavy pages, ensure data elements are loaded
+      await Promise.race([
+        Promise.all([
+          readinessChecks.basicContent,
+          readinessChecks.dataElements,
+          readinessChecks.noLoading
+        ]),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    } else {
+      // For regular pages, wait for basic content and interactive elements
+      await Promise.race([
+        Promise.all([
+          readinessChecks.basicContent,
+          readinessChecks.interactiveElements,
+          readinessChecks.noLoading
+        ]),
+        new Promise(resolve => setTimeout(resolve, 5000))
+      ]);
+    }
+
+    // Brief final wait for any remaining animations
+    await page.waitForTimeout(100);
+
+    const waitTime = Date.now() - waitStart;
+    console.log(`⏱️ [DEBUG] waitForContent completed in ${waitTime}ms (fastMode: ${fastMode}, dataHeavy: ${isDataHeavyPage})`);
   }
 
-  // Handle automatic login
+  // Get or create persistent browser instance
+  async getBrowserInstance(key = 'default') {
+    if (this.browserPool.has(key)) {
+      const browserData = this.browserPool.get(key);
+      
+      // Check if browser is still alive
+      try {
+        await browserData.browser.version();
+        browserData.lastUsed = Date.now();
+        this.performanceStats.browserReuse++;
+        console.log(`🔄 Reusing browser instance: ${key}`);
+        return browserData.browser;
+      } catch (error) {
+        console.log(`💀 Browser instance ${key} is dead, creating new one`);
+        this.browserPool.delete(key);
+      }
+    }
+    
+    // Check if we're at pool limit - if so, use round-robin
+    if (this.browserPool.size >= this.maxPoolSize) {
+      const browsers = Array.from(this.browserPool.entries());
+      const oldestBrowser = browsers.reduce((oldest, current) => 
+        current[1].lastUsed < oldest[1].lastUsed ? current : oldest
+      );
+      
+      console.log(`🔄 Pool limit reached, reusing browser: ${oldestBrowser[0]}`);
+      oldestBrowser[1].lastUsed = Date.now();
+      this.performanceStats.browserReuse++;
+      return oldestBrowser[1].browser;
+    }
+    
+    // Create new browser instance
+    console.log(`🚀 Creating new browser instance: ${key} (${this.browserPool.size + 1}/${this.maxPoolSize})`);
+    const browser = await chromium.launch({ 
+      headless: true,
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-features=TranslateUI',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor'
+      ]
+    });
+    
+    this.browserPool.set(key, {
+      browser,
+      created: Date.now(),
+      lastUsed: Date.now()
+    });
+    
+    return browser;
+  }
+  
+  // Get or create persistent browser context
+  async getBrowserContext(browser, viewport, sessionKey = null) {
+    const contextKey = `${sessionKey || 'default'}_${viewport.width}x${viewport.height}`;
+    
+    if (this.contextPool.has(contextKey)) {
+      const contextData = this.contextPool.get(contextKey);
+      
+      // Check if context is still alive
+      try {
+        await contextData.context.pages();
+        contextData.lastUsed = Date.now();
+        console.log(`🔄 Reusing browser context: ${contextKey}`);
+        return contextData.context;
+      } catch (error) {
+        console.log(`💀 Context ${contextKey} is dead, creating new one`);
+        this.contextPool.delete(contextKey);
+      }
+    }
+    
+    // Create new context
+    console.log(`🆕 Creating new browser context: ${contextKey}`);
+    const context = await browser.newContext({
+      viewport: viewport,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    });
+    
+    this.contextPool.set(contextKey, {
+      context,
+      created: Date.now(),
+      lastUsed: Date.now()
+    });
+    
+    return context;
+  }
+  
+  // Check if we have a valid cached session
+  getCachedSession(domain, username) {
+    const sessionKey = `${domain}_${username}`;
+    const cached = this.sessionCache.get(sessionKey);
+    
+    if (cached && (Date.now() - cached.timestamp) < this.sessionTTL) {
+      this.performanceStats.cacheHits++;
+      console.log(`⚡ Using cached session for ${username} at ${domain}`);
+      return cached;
+    }
+    
+    if (cached) {
+      this.sessionCache.delete(sessionKey);
+      console.log(`🗑️ Expired session cache for ${username} at ${domain}`);
+    }
+    
+    return null;
+  }
+  
+  // Cache authenticated session
+  cacheSession(domain, username, cookies, storage) {
+    const sessionKey = `${domain}_${username}`;
+    this.sessionCache.set(sessionKey, {
+      cookies,
+      storage,
+      timestamp: Date.now(),
+      domain,
+      username
+    });
+    console.log(`💾 Cached session for ${username} at ${domain}`);
+  }
+  
+  // Clean up expired sessions and idle browsers
+  cleanupExpiredSessions() {
+    const now = Date.now();
+    
+    // Clean up expired sessions
+    for (const [key, session] of this.sessionCache.entries()) {
+      if (now - session.timestamp > this.sessionTTL) {
+        this.sessionCache.delete(key);
+        console.log(`🧹 Cleaned up expired session: ${key}`);
+      }
+    }
+    
+    // Clean up idle browsers
+    for (const [key, browserData] of this.browserPool.entries()) {
+      if (now - browserData.lastUsed > this.browserTTL) {
+        browserData.browser.close().catch(console.error);
+        this.browserPool.delete(key);
+        console.log(`🧹 Cleaned up idle browser: ${key}`);
+      }
+    }
+    
+    // Clean up idle contexts
+    for (const [key, contextData] of this.contextPool.entries()) {
+      if (now - contextData.lastUsed > this.browserTTL) {
+        contextData.context.close().catch(console.error);
+        this.contextPool.delete(key);
+        console.log(`🧹 Cleaned up idle context: ${key}`);
+      }
+    }
+  }
+  
+  // Graceful shutdown - cleanup all resources
+  async shutdown() {
+    console.log(`🔄 Shutting down MCP Screenshot Server...`);
+    
+    // Stop cleanup interval
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+    }
+    
+    // Close all browser contexts
+    for (const [key, contextData] of this.contextPool.entries()) {
+      try {
+        await contextData.context.close();
+        console.log(`🧹 Closed context: ${key}`);
+      } catch (error) {
+        console.error(`❌ Error closing context ${key}:`, error.message);
+      }
+    }
+    this.contextPool.clear();
+    
+    // Close all browser instances
+    for (const [key, browserData] of this.browserPool.entries()) {
+      try {
+        await browserData.browser.close();
+        console.log(`🧹 Closed browser: ${key}`);
+      } catch (error) {
+        console.error(`❌ Error closing browser ${key}:`, error.message);
+      }
+    }
+    this.browserPool.clear();
+    
+    // Clear session cache
+    this.sessionCache.clear();
+    
+    console.log(`✅ MCP Screenshot Server shutdown complete`);
+  }
+  
+  // Enhanced login with session caching
+  async handleLoginWithCache(page, loginCredentials) {
+    const domain = new URL(page.url()).hostname;
+    const { username, password } = loginCredentials;
+    
+    // Check for cached session
+    const cached = this.getCachedSession(domain, username);
+    if (cached) {
+      try {
+        // Restore cookies and storage
+        await page.context().addCookies(cached.cookies);
+        await page.evaluate((storage) => {
+          for (const [key, value] of Object.entries(storage)) {
+            localStorage.setItem(key, value);
+          }
+        }, cached.storage);
+        
+        // Verify still logged in
+        await page.reload({ waitUntil: 'networkidle', timeout: 10000 });
+        await page.waitForTimeout(1000);
+        
+        const currentUrl = page.url();
+        const isLoginPage = currentUrl.includes('/login') || currentUrl.includes('/signin') || currentUrl.includes('/auth');
+        
+        if (!isLoginPage) {
+          console.log(`⚡ Successfully restored cached session for ${username}`);
+          return true;
+        }
+      } catch (error) {
+        console.log(`❌ Failed to restore cached session: ${error.message}`);
+      }
+    }
+    
+    // Perform fresh login
+    const loginSuccess = await this.handleLogin(page, loginCredentials);
+    
+    if (loginSuccess) {
+      // Cache the session
+      try {
+        const cookies = await page.context().cookies();
+        const storage = await page.evaluate(() => {
+          const items = {};
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            items[key] = localStorage.getItem(key);
+          }
+          return items;
+        });
+        
+        this.cacheSession(domain, username, cookies, storage);
+      } catch (error) {
+        console.log(`⚠️ Failed to cache session: ${error.message}`);
+      }
+    }
+    
+    return loginSuccess;
+  }
+
+  // Handle automatic login (original method)
   async handleLogin(page, loginCredentials) {
     const {
       username,
@@ -312,7 +682,7 @@ class MCPScreenshotServer {
         await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
         await page.waitForTimeout(2000);
       }
-
+      
       // Wait for login form to be present
       await page.waitForSelector(usernameSelector, { timeout: 10000 });
       await page.waitForSelector(passwordSelector, { timeout: 10000 });
@@ -330,11 +700,11 @@ class MCPScreenshotServer {
       // Submit form
       console.log(`🚀 Submitting login form...`);
       await page.click(submitSelector);
-
+      
       // Wait for navigation after login
       await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 });
       await page.waitForTimeout(3000);
-
+      
       // Check if login was successful
       const currentUrl = page.url();
       const isStillOnLoginPage = currentUrl.includes('/login') || currentUrl.includes('/signin') || currentUrl.includes('/auth');
@@ -709,7 +1079,7 @@ class MCPScreenshotServer {
       try {
         await page.goto(currentUrl, { waitUntil: 'networkidle', timeout: 30000 });
         await page.waitForTimeout(2000);
-        await this.waitForContent(page);
+        await this.waitForContent(page, true); // Use fast mode for navigation
         
         // Take screenshot if requested
         if (navigationFlow.screenshotEachPage) {
@@ -786,13 +1156,13 @@ class MCPScreenshotServer {
           // If login credentials are provided, attempt login
           if (loginCredentials && loginCredentials.username && loginCredentials.password) {
             try {
-              await this.handleLogin(page, loginCredentials);
+              await this.handleLoginWithCache(page, loginCredentials);
               
               // After successful login, navigate to original URL
               console.log(`🌐 Navigating to original URL after login: ${url}`);
               await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
               await page.waitForTimeout(2000);
-              await this.waitForContent(page);
+              await this.waitForContent(page, true); // Use fast mode after login
               
               // Continue with normal screenshot capture
               console.log(`✅ Login successful, proceeding with screenshots`);
@@ -873,7 +1243,7 @@ class MCPScreenshotServer {
         // Reset scroll position
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.waitForTimeout(1000);
-        await this.waitForContent(page);
+        await this.waitForContent(page, true); // Use fast mode for scroll screenshots
 
         // Get enhanced page info including scrollable containers
         const pageInfo = await page.evaluate(() => {
@@ -913,7 +1283,7 @@ class MCPScreenshotServer {
 
         const scrollStep = 800;
         const maxScrollScreenshots = 10;
-        const scrollDelay = 1500;
+        const scrollDelay = 800; // Reduced from 1500ms
 
         console.log(`📏 Scroll range: 0 to ${maxScroll}px`);
 
@@ -977,7 +1347,7 @@ class MCPScreenshotServer {
 
             // Wait for scroll to complete and content to load
             await page.waitForTimeout(scrollDelay);
-            await this.waitForContent(page);
+            await this.waitForContent(page, true); // Use fast mode for scroll screenshots
 
             const scrollScreenshot = await page.screenshot({ type: 'png', fullPage: false });
             screenshots.push({
@@ -1026,6 +1396,23 @@ class MCPScreenshotServer {
     const { name, arguments: args } = request.params;
     
     if (name === 'screenshot') {
+      // Start comprehensive timing
+      const timingStart = Date.now();
+      const timingData = {
+        start: timingStart,
+        browserInit: null,
+        contextInit: null,
+        pageInit: null,
+        navigation: null,
+        loginStart: null,
+        loginEnd: null,
+        waitForContent: null,
+        screenshot: null,
+        total: null
+      };
+      
+      console.log(`⏱️ [DEBUG] Starting screenshot request at ${new Date().toISOString()}`);
+      
       try {
         const url = args.url;
         const scrollScreenshots = args.scrollScreenshots !== false;
@@ -1058,26 +1445,82 @@ class MCPScreenshotServer {
           console.log(`🧭 Navigation flow requested`);
         }
         
-        // Launch browser and capture screenshots
+        // Launch browser and capture screenshots with performance optimizations
         let browser;
+        let context;
+        let page;
+        
         try {
-          browser = await chromium.launch({ 
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-          });
+          // Get pooled browser instance
+          console.log(`⏱️ [DEBUG] Getting browser instance...`);
+          const browserStartTime = Date.now();
+          browser = await this.getBrowserInstance();
+          timingData.browserInit = Date.now() - browserStartTime;
+          console.log(`⏱️ [DEBUG] Browser ready in ${timingData.browserInit}ms`);
           
-          const context = await browser.newContext({
-            viewport: viewport
-          });
+          // Get pooled context
+          console.log(`⏱️ [DEBUG] Getting browser context...`);
+          const contextStartTime = Date.now();
+          const sessionKey = loginCredentials?.username || 'default';
+          context = await this.getBrowserContext(browser, viewport, sessionKey);
+          timingData.contextInit = Date.now() - contextStartTime;
+          console.log(`⏱️ [DEBUG] Context ready in ${timingData.contextInit}ms`);
           
-          const page = await context.newPage();
+          // Create new page
+          console.log(`⏱️ [DEBUG] Creating new page...`);
+          const pageStartTime = Date.now();
+          page = await context.newPage();
+          timingData.pageInit = Date.now() - pageStartTime;
+          console.log(`⏱️ [DEBUG] Page ready in ${timingData.pageInit}ms`);
           
-          // Navigate to page
-          await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
-          await page.waitForTimeout(2000);
-          await this.waitForContent(page);
+          // Navigate to page with optimized loading
+          console.log(`⏱️ [DEBUG] Navigating to ${url}...`);
+          const navStartTime = Date.now();
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          timingData.navigation = Date.now() - navStartTime;
+          console.log(`⏱️ [DEBUG] Navigation completed in ${timingData.navigation}ms`);
+          
+          // Determine if we need fast mode (for authenticated pages)
+          const needsAuth = loginCredentials && loginCredentials.username && loginCredentials.password;
+          const fastMode = needsAuth; // Use fast mode for authenticated pages
+          
+          console.log(`⏱️ [DEBUG] Waiting for content... (fastMode: ${fastMode})`);
+          const waitStartTime = Date.now();
+          await this.waitForContent(page, fastMode);
+          timingData.waitForContent = Date.now() - waitStartTime;
+          console.log(`⏱️ [DEBUG] Content ready in ${timingData.waitForContent}ms`);
+          
+          // Handle login if required
+          if (needsAuth) {
+            console.log(`⏱️ [DEBUG] Starting login process...`);
+            timingData.loginStart = Date.now();
+            
+            // Check if we need to login
+            const currentUrl = page.url();
+            const isLoginPage = currentUrl.includes('/login') || currentUrl.includes('/signin') || currentUrl.includes('/auth');
+            
+            if (isLoginPage) {
+              console.log(`🔐 Login page detected, attempting authentication...`);
+              await this.handleLoginWithCache(page, loginCredentials);
+              
+              // After login, wait for content again with fast mode
+              console.log(`⏱️ [DEBUG] Waiting for authenticated content... (fast mode)`);
+              const postLoginWaitStart = Date.now();
+              await this.waitForContent(page, true); // Always use fast mode after login
+              const postLoginWaitTime = Date.now() - postLoginWaitStart;
+              console.log(`⏱️ [DEBUG] Post-login content ready in ${postLoginWaitTime}ms`);
+            } else {
+              console.log(`✅ Already authenticated or public page`);
+            }
+            
+            timingData.loginEnd = Date.now();
+            const loginDuration = timingData.loginEnd - timingData.loginStart;
+            console.log(`⏱️ [DEBUG] Login process completed in ${loginDuration}ms`);
+          }
           
           // Capture comprehensive screenshots
+          console.log(`⏱️ [DEBUG] Starting screenshot capture...`);
+          const screenshotStartTime = Date.now();
           const result = await this.captureScreenshots(page, url, {
             scrollScreenshots,
             fullPage,
@@ -1086,10 +1529,40 @@ class MCPScreenshotServer {
             interactions,
             navigationFlow
           });
+          timingData.screenshot = Date.now() - screenshotStartTime;
+          console.log(`⏱️ [DEBUG] Screenshot capture completed in ${timingData.screenshot}ms`);
           
+          // Clean up page only (keep browser and context alive)
           await page.close();
-          await context.close();
-          await browser.close();
+          
+          // Calculate total time
+          timingData.total = Date.now() - timingStart;
+          
+          // Log comprehensive timing report
+          console.log(`⏱️ [TIMING REPORT] Total: ${timingData.total}ms`);
+          console.log(`⏱️ [TIMING BREAKDOWN]:`);
+          console.log(`  - Browser Init: ${timingData.browserInit}ms`);
+          console.log(`  - Context Init: ${timingData.contextInit}ms`);
+          console.log(`  - Page Init: ${timingData.pageInit}ms`);
+          console.log(`  - Navigation: ${timingData.navigation}ms`);
+          console.log(`  - Wait for Content: ${timingData.waitForContent}ms`);
+          if (timingData.loginStart) {
+            console.log(`  - Login Process: ${timingData.loginEnd - timingData.loginStart}ms`);
+          }
+          console.log(`  - Screenshot Capture: ${timingData.screenshot}ms`);
+          
+          // Update performance stats
+          this.performanceStats.totalRequests++;
+          this.performanceStats.averageResponseTime = 
+            (this.performanceStats.averageResponseTime + timingData.total) / this.performanceStats.totalRequests;
+          
+          console.log(`📊 Performance Stats:`);
+          console.log(`  - Total Requests: ${this.performanceStats.totalRequests}`);
+          console.log(`  - Cache Hits: ${this.performanceStats.cacheHits}`);
+          console.log(`  - Browser Reuse: ${this.performanceStats.browserReuse}`);
+          console.log(`  - Average Response Time: ${Math.round(this.performanceStats.averageResponseTime)}ms`);
+          
+          // DON'T close browser and context - they're pooled for reuse!
           
           // Handle different return formats
           let screenshots, analysisData;
@@ -1098,11 +1571,10 @@ class MCPScreenshotServer {
             screenshots = result.screenshots;
             analysisData = result.pageAnalysis;
           } else {
-            // Legacy format (just screenshots array)
+            // Legacy format
             screenshots = result;
+            analysisData = null;
           }
-          
-          console.log(`✅ Captured ${screenshots.length} screenshots successfully`);
           
           // Return results in MCP format
           const response = {
@@ -1115,23 +1587,43 @@ class MCPScreenshotServer {
             // Add page analysis as a text content item
             response.content.push({
               type: 'text',
-              text: `# Page Analysis\n\n${JSON.stringify(analysisData, null, 2)}`
+              text: `# Page Analysis\\n\\n${JSON.stringify(analysisData, null, 2)}`
             });
           }
           
+          // Add timing data as debug info
+          response.content.push({
+            type: 'text',
+            text: `# Performance Debug Info\\n\\nTotal Time: ${timingData.total}ms\\nBreakdown: ${JSON.stringify(timingData, null, 2)}`
+          });
+          
           this.sendResponse(request.id, response);
           
-        } catch (e) {
-          if (browser) await browser.close();
+        } catch (error) {
+          console.error(`❌ Error in screenshot operation:`, error);
+          const errorTime = Date.now() - timingStart;
+          console.log(`⏱️ [DEBUG] Error occurred after ${errorTime}ms`);
+          
+          // Clean up on error
+          if (page) {
+            try { await page.close(); } catch (e) {}
+          }
+          
           this.sendResponse(request.id, null, {
             code: -32603,
-            message: `Screenshot capture failed: ${e.message}`
+            message: `Screenshot capture failed: ${error.message}`,
+            data: { timingData, errorTime }
           });
         }
       } catch (error) {
+        console.error(`❌ Error in handleToolsCall:`, error);
+        const errorTime = Date.now() - timingStart;
+        console.log(`⏱️ [DEBUG] Fatal error occurred after ${errorTime}ms`);
+        
         this.sendResponse(request.id, null, {
           code: -32603,
-          message: `Internal error: ${error.message}`
+          message: `Request failed: ${error.message}`,
+          data: { errorTime }
         });
       }
     } else {
@@ -1201,6 +1693,32 @@ class MCPScreenshotServer {
   }
 }
 
-// Start the MCP server
+// Create and start the server
 const server = new MCPScreenshotServer();
+
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  console.log(`\n🛑 Received SIGINT, shutting down gracefully...`);
+  await server.shutdown();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log(`\n🛑 Received SIGTERM, shutting down gracefully...`);
+  await server.shutdown();
+  process.exit(0);
+});
+
+process.on('uncaughtException', async (error) => {
+  console.error('❌ Uncaught exception:', error);
+  await server.shutdown();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+  console.error('❌ Unhandled rejection at:', promise, 'reason:', reason);
+  await server.shutdown();
+  process.exit(1);
+});
+
 server.start(); 
