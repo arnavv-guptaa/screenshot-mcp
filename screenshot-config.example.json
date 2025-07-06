@@ -1,0 +1,99 @@
+{
+    "name": "Your App Name",
+    "baseUrl": "http://localhost:3000",
+    
+    "browser": {
+      "headless": false,
+      "viewport": {
+        "width": 1512,
+        "height": 982
+      },
+      "userDataDir": "./browser-session",
+      "timeout": 45000
+    },
+    
+    "authentication": {
+      "required": true,
+      "loginUrl": "http://localhost:3000/login",
+      "method": "form",
+      "credentials": {
+        "username": "your-email@example.com",
+        "password": "your-password",
+        "usernameSelector": "#email",
+        "passwordSelector": "#password", 
+        "submitSelector": "button[type='submit']"
+      }
+    },
+    
+    "screenshots": {
+      "outputDir": "./screenshots",
+      "scrollScreenshots": true,
+      "fullPage": true,
+      "delay": 1000,
+      "scrollDelay": 1000,
+      "scrollStep": 800,
+      "maxScrollScreenshots": 15
+    },
+    
+    "ai": {
+      "enabled": true,
+      "openrouterApiKey": "your-openrouter-api-key-here",
+      "model": "deepseek/deepseek-chat-v3-0324:free"
+    },
+    
+    "tabs": {
+      "enabled": false,
+      "delay": 1500,
+      "maxPerPage": 10,
+      "selectors": [
+        "[role='tab']",
+        ".tab:not(.tab-content)",
+        ".nav-tab",
+        ".nav-link",
+        ".tabs > *",
+        ".tab-header > *",
+        ".MuiTab-root",
+        ".ant-tabs-tab",
+        "[data-tab]",
+        "[aria-selected]"
+      ],
+      "containerSelectors": [
+        "[role='tablist']",
+        ".tabs",
+        ".nav-tabs",
+        ".tab-container",
+        ".MuiTabs-root",
+        ".ant-tabs"
+      ]
+    },
+    
+    "crawling": {
+      "maxPages": 50,
+      "maxDepth": 3,
+      "excludePatterns": [
+        "/api/",
+        "/.well-known/", 
+        "/health",
+        "/metrics",
+        ".pdf",
+        ".zip", 
+        ".csv",
+        ".xlsx",
+        ".doc",
+        "mailto:",
+        "tel:",
+        "javascript:",
+        "#"
+      ]
+    },
+    
+    "commonElements": {
+      "navigation": "nav, .navbar, .navigation",
+      "header": "header, .header", 
+      "footer": "footer, .footer",
+      "sidebar": ".sidebar, .side-nav, aside",
+      "main": "main, .main-content, .content",
+      "hero": ".hero, .hero-section, .banner",
+      "forms": "form, .form-container"
+    }
+} 
