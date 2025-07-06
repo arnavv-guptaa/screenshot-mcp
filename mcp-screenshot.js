@@ -38,12 +38,95 @@ class MCPScreenshotServer {
               type: 'object',
               description: 'Login credentials if authentication is required',
               properties: {
-                loginUrl: { type: 'string', description: 'URL of the login page' },
-                username: { type: 'string', description: 'Username or email' },
-                password: { type: 'string', description: 'Password' },
-                usernameSelector: { type: 'string', description: 'CSS selector for username field', default: 'input[type="email"], input[name*="email"], input[name*="username"]' },
-                passwordSelector: { type: 'string', description: 'CSS selector for password field', default: 'input[type="password"]' },
-                submitSelector: { type: 'string', description: 'CSS selector for submit button', default: 'button[type="submit"], input[type="submit"]' }
+                username: {
+                  type: 'string',
+                  description: 'Username or email'
+                },
+                password: {
+                  type: 'string',
+                  description: 'Password'
+                },
+                loginUrl: {
+                  type: 'string',
+                  description: 'URL of the login page'
+                },
+                usernameSelector: {
+                  type: 'string',
+                  description: 'CSS selector for username field',
+                  default: 'input[type="email"], input[name*="email"], input[name*="username"]'
+                },
+                passwordSelector: {
+                  type: 'string',
+                  description: 'CSS selector for password field',
+                  default: 'input[type="password"]'
+                },
+                submitSelector: {
+                  type: 'string',
+                  description: 'CSS selector for submit button',
+                  default: 'button[type="submit"], input[type="submit"]'
+                }
+              }
+            },
+            pageAnalysis: {
+              type: 'boolean',
+              description: 'Extract page structure, links, and interactive elements for AI analysis',
+              default: false
+            },
+            interactions: {
+              type: 'array',
+              description: 'Sequence of interactions to perform before screenshots',
+              items: {
+                type: 'object',
+                properties: {
+                  action: {
+                    type: 'string',
+                    enum: ['click', 'hover', 'scroll', 'fill', 'select', 'wait'],
+                    description: 'Type of interaction'
+                  },
+                  selector: {
+                    type: 'string',
+                    description: 'CSS selector for target element'
+                  },
+                  value: {
+                    type: 'string',
+                    description: 'Value to input (for fill/select actions)'
+                  },
+                  waitFor: {
+                    type: 'string',
+                    description: 'Element to wait for after action'
+                  },
+                  screenshot: {
+                    type: 'boolean',
+                    description: 'Take screenshot after this action',
+                    default: false
+                  }
+                }
+              }
+            },
+            navigationFlow: {
+              type: 'object',
+              description: 'Multi-page navigation configuration',
+              properties: {
+                followLinks: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'CSS selectors or text patterns for links to follow'
+                },
+                maxDepth: {
+                  type: 'number',
+                  description: 'Maximum navigation depth',
+                  default: 2
+                },
+                excludePatterns: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'URL patterns to exclude from navigation'
+                },
+                screenshotEachPage: {
+                  type: 'boolean',
+                  description: 'Take screenshots of each navigated page',
+                  default: true
+                }
               }
             }
           },
@@ -137,150 +220,73 @@ class MCPScreenshotServer {
     await page.waitForTimeout(1000);
   }
 
-  // Handle login when required
-  async loginOnPage(page, loginCredentials) {
-    if (!loginCredentials || !loginCredentials.username || !loginCredentials.password) {
-      console.log('⚠️ No login credentials provided');
-      return false;
+  // Handle automatic login
+  async handleLogin(page, loginCredentials) {
+    const {
+      username,
+      password,
+      loginUrl,
+      usernameSelector = 'input[type="email"], input[name*="email"], input[name*="username"]',
+      passwordSelector = 'input[type="password"]',
+      submitSelector = 'button[type="submit"], input[type="submit"]'
+    } = loginCredentials;
+
+    if (!username || !password) {
+      throw new Error('Username and password are required for login');
     }
-    
+
+    console.log(`🔐 Attempting login...`);
+
     try {
-      console.log(`🔐 Checking current page authentication status...`);
-      
-      const currentUrl = page.url();
-      const currentTitle = await page.title();
-      
-      console.log(`   Current URL: ${currentUrl}`);
-      console.log(`   Current Title: ${currentTitle}`);
-      
-      // Check if already authenticated
-      const authStatus = await page.evaluate(() => {
-        const hasLogoutButton = document.querySelector('[href*="logout"], [onclick*="logout"], [class*="logout"], [data-testid*="logout"]');
-        const hasUserMenu = document.querySelector('.user-menu, [class*="user-menu"], [class*="profile"], [data-testid*="user"]');
-        const hasUserAvatar = document.querySelector('.user-avatar, [class*="avatar"], img[class*="user"]');
-        const hasWelcomeMessage = document.body.textContent.toLowerCase().includes('welcome') || 
-                                 document.body.textContent.toLowerCase().includes('dashboard');
-        
-        const isOnLoginPage = 
-          window.location.pathname.includes('/login') ||
-          window.location.pathname.includes('/signin') ||
-          window.location.pathname.includes('/auth') ||
-          document.title.toLowerCase().includes('login') ||
-          document.title.toLowerCase().includes('sign in') ||
-          document.querySelector('input[type="password"]') !== null;
-        
-        return {
-          isAuthenticated: !!(hasLogoutButton || hasUserMenu || hasUserAvatar || hasWelcomeMessage),
-          isOnLoginPage,
-          hasPasswordField: !!document.querySelector('input[type="password"]'),
-          indicators: {
-            hasLogoutButton: !!hasLogoutButton,
-            hasUserMenu: !!hasUserMenu,
-            hasUserAvatar: !!hasUserAvatar,
-            hasWelcomeMessage: hasWelcomeMessage
-          }
-        };
-      });
-      
-      console.log(`   Is On Login Page: ${authStatus.isOnLoginPage}`);
-      console.log(`   Is Authenticated: ${authStatus.isAuthenticated}`);
-      
-      // If already authenticated, no need to login
-      if (authStatus.isAuthenticated && !authStatus.isOnLoginPage) {
-        console.log('✅ Already authenticated on current page');
-        return true;
-      }
-      
-      // If not on login page but also not authenticated, navigate to login
-      if (!authStatus.isOnLoginPage && loginCredentials.loginUrl) {
-        console.log(`🔐 Navigating to login page: ${loginCredentials.loginUrl}`);
-        await page.goto(loginCredentials.loginUrl, { waitUntil: 'networkidle' });
+      // If loginUrl is provided, navigate to it first
+      if (loginUrl) {
+        console.log(`🌐 Navigating to login page: ${loginUrl}`);
+        await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 30000 });
         await page.waitForTimeout(2000);
       }
-      
-      // Set default selectors if not provided
-      const usernameSelector = loginCredentials.usernameSelector || 'input[type="email"], input[name*="email"], input[name*="username"]';
-      const passwordSelector = loginCredentials.passwordSelector || 'input[type="password"]';
-      const submitSelector = loginCredentials.submitSelector || 'button[type="submit"], input[type="submit"]';
-      
-      console.log(`🔐 Attempting login on current page...`);
-      
-      // Check if login form exists
-      const loginFormExists = await page.locator(usernameSelector).count() > 0;
-      if (!loginFormExists) {
-        console.log('⚠️ Login form not found with selector:', usernameSelector);
-        return false;
-      }
-      
-      // Fill login form
-      console.log(`📝 Filling login form...`);
-      await page.fill(usernameSelector, loginCredentials.username);
-      await page.fill(passwordSelector, loginCredentials.password);
-      
-      console.log(`🖱️ Clicking submit button...`);
+
+      // Wait for login form to be present
+      await page.waitForSelector(usernameSelector, { timeout: 10000 });
+      await page.waitForSelector(passwordSelector, { timeout: 10000 });
+
+      // Fill in username
+      console.log(`👤 Filling username field...`);
+      await page.fill(usernameSelector, username);
+      await page.waitForTimeout(500);
+
+      // Fill in password
+      console.log(`🔑 Filling password field...`);
+      await page.fill(passwordSelector, password);
+      await page.waitForTimeout(500);
+
+      // Submit form
+      console.log(`🚀 Submitting login form...`);
       await page.click(submitSelector);
+
+      // Wait for navigation after login
+      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 });
+      await page.waitForTimeout(3000);
+
+      // Check if login was successful
+      const currentUrl = page.url();
+      const isStillOnLoginPage = currentUrl.includes('/login') || currentUrl.includes('/signin') || currentUrl.includes('/auth');
       
-      // Wait for response
-      console.log(`⏳ Waiting for login response...`);
-      
-      try {
-        await Promise.race([
-          page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10000 }),
-          page.waitForSelector('.error, [class*="error"], [class*="invalid"]', { timeout: 3000 })
-        ]);
-      } catch (e) {
-        console.log(`⏳ No immediate navigation or error, checking page state...`);
-      }
-      
-      await page.waitForTimeout(2000);
-      
-      // Verify login success
-      const postLoginStatus = await page.evaluate(() => {
-        const currentUrl = window.location.href;
-        const isStillOnLogin = currentUrl.includes('/login') || currentUrl.includes('/signin');
+      if (isStillOnLoginPage) {
+        // Check for error messages
+        const errorMessage = await page.evaluate(() => {
+          const errorElements = document.querySelectorAll('[class*="error"], [class*="invalid"], [class*="fail"], [role="alert"]');
+          return Array.from(errorElements).map(el => el.textContent.trim()).join('; ');
+        });
         
-        const errorElements = document.querySelectorAll('.error, [class*="error"], [class*="invalid"], [class*="wrong"]');
-        const hasError = errorElements.length > 0 && Array.from(errorElements).some(el => 
-          el.textContent.toLowerCase().includes('invalid') || 
-          el.textContent.toLowerCase().includes('incorrect') ||
-          el.textContent.toLowerCase().includes('wrong')
-        );
-        
-        const hasAuthIndicators = 
-          document.querySelector('[href*="logout"], [onclick*="logout"]') ||
-          document.querySelector('.user-menu, [class*="user-menu"]') ||
-          document.querySelector('.user-avatar, [class*="avatar"]');
-        
-        return {
-          url: currentUrl,
-          isStillOnLogin,
-          hasError,
-          hasAuthIndicators
-        };
-      });
-      
-      console.log(`🔍 Post-login verification:`);
-      console.log(`   Current URL: ${postLoginStatus.url}`);
-      console.log(`   Still on login: ${postLoginStatus.isStillOnLogin}`);
-      console.log(`   Has error: ${postLoginStatus.hasError}`);
-      console.log(`   Has auth indicators: ${postLoginStatus.hasAuthIndicators}`);
-      
-      if (postLoginStatus.hasError) {
-        console.log('❌ Login failed - error message detected');
-        return false;
+        throw new Error(`Login failed: ${errorMessage || 'Still on login page after submission'}`);
       }
-      
-      if (!postLoginStatus.isStillOnLogin || postLoginStatus.hasAuthIndicators) {
-        console.log('✅ Login successful');
-        return true;
-      } else {
-        console.log('❌ Login failed - still on login page');
-        return false;
-      }
-      
+
+      console.log(`✅ Login successful, redirected to: ${currentUrl}`);
+      return true;
+
     } catch (error) {
-      console.error('❌ Login error:', error.message);
-      return false;
+      console.error(`❌ Login failed: ${error.message}`);
+      throw new Error(`Login failed: ${error.message}`);
     }
   }
 
@@ -309,33 +315,38 @@ class MCPScreenshotServer {
         if (isLoginPage) {
           console.log(`⚠️ Redirected to login page: ${currentUrl}`);
           
-          // Attempt login if credentials provided
-          if (loginCredentials) {
-            console.log(`🔐 Attempting automatic login...`);
-            const loginSuccess = await this.loginOnPage(page, loginCredentials);
-            if (loginSuccess) {
-              console.log(`✅ Login successful, retrying page access...`);
-              await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
+          // If login credentials are provided, attempt login
+          if (loginCredentials && loginCredentials.username && loginCredentials.password) {
+            try {
+              await this.handleLogin(page, loginCredentials);
+              
+              // After successful login, navigate to original URL
+              console.log(`🌐 Navigating to original URL after login: ${url}`);
+              await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
               await page.waitForTimeout(2000);
               await this.waitForContent(page);
-              // Continue with screenshot capture after successful login
-            } else {
-              console.log(`❌ Login failed`);
+              
+              // Continue with normal screenshot capture
+              console.log(`✅ Login successful, proceeding with screenshots`);
+            } catch (loginError) {
+              console.error(`❌ Login failed: ${loginError.message}`);
+              // Take screenshot of login failure
               screenshots.push({
                 type: 'image',
                 mimeType: 'image/png',
                 data: (await page.screenshot({ type: 'png', fullPage: false })).toString('base64'),
                 name: `${baseName}_login_failed.png`
               });
-              return screenshots;
+              throw new Error(`Login failed: ${loginError.message}`);
             }
           } else {
-            console.log(`❌ No login credentials provided for protected page`);
+            // No login credentials provided, just capture login page
+            console.log(`ℹ️ No login credentials provided, capturing login page`);
             screenshots.push({
               type: 'image',
               mimeType: 'image/png',
               data: (await page.screenshot({ type: 'png', fullPage: false })).toString('base64'),
-              name: `${baseName}_login_required.png`
+              name: `${baseName}_login_page.png`
             });
             return screenshots;
           }
@@ -525,8 +536,8 @@ class MCPScreenshotServer {
         }
 
         console.log(`📸 Starting comprehensive screenshot capture for: ${url}`);
-        if (loginCredentials) {
-          console.log(`🔐 Login credentials provided for authentication`);
+        if (loginCredentials && loginCredentials.username) {
+          console.log(`🔐 Login credentials provided for user: ${loginCredentials.username}`);
         }
         
         // Launch browser and capture screenshots
