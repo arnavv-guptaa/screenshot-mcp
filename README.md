@@ -18,27 +18,41 @@ A powerful AI-powered web application screenshot tool with authentication suppor
 npm install
 ```
 
-### 2. Setup Configuration
+### 2. Setup Configuration (Optional)
 Copy the example configuration and customize it:
 ```bash
-cp screenshot-config.example.json screenshot-config.json
+npm run setup
 ```
 
 Edit `screenshot-config.json` with your settings:
 - Update `baseUrl` to your application URL
-- Add your OpenRouter API key for AI features
+- Add your OpenRouter API key for AI features (optional)
 - Configure authentication credentials if needed
 
 ### 3. Run Screenshots
 
-#### Capture a Single Page
+#### Fast Page Capture (Default - No AI)
 ```bash
 npm run page http://localhost:3000/features
 ```
 
-#### Capture All Pages (Crawling)
+#### AI-Powered Page Capture
+```bash
+npm run page:ai http://localhost:3000/features
+# or
+npm run page http://localhost:3000/features --ai
+```
+
+#### Fast Site Crawling
 ```bash
 npm run crawl
+```
+
+#### AI-Powered Site Crawling
+```bash
+npm run crawl:ai
+# or
+npm run crawl --ai
 ```
 
 #### Capture Protected Pages

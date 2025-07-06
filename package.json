@@ -1,18 +1,24 @@
 {
-  "name": "dev-screenshot-tool",
+  "name": "screen-capture-tool",
   "version": "1.0.0",
-  "description": "Powerful development screenshot tool with authentication support",
+  "description": "AI-powered web application screenshot tool with authentication support and intelligent crawling",
   "main": "dev-screenshot-tool.js",
   "bin": {
-    "dev-screenshot": "./dev-screenshot-tool.js"
+    "screen-capture": "./dev-screenshot-tool.js",
+    "screenshot": "./dev-screenshot-tool.js"
   },
   "scripts": {
     "start": "node dev-screenshot-tool.js",
     "page": "node dev-screenshot-tool.js page",
+    "page:ai": "node dev-screenshot-tool.js page --ai",
     "element": "node dev-screenshot-tool.js element",
     "region": "node dev-screenshot-tool.js region",
     "crawl": "node dev-screenshot-tool.js crawl",
-    "install-global": "npm install -g ."
+    "crawl:ai": "node dev-screenshot-tool.js crawl --ai",
+    "install-global": "npm install -g .",
+    "setup": "cp screenshot-config.example.json screenshot-config.json && echo 'Configuration file created! Edit screenshot-config.json with your settings.'",
+    "test": "node dev-screenshot-tool.js page http://localhost:3000",
+    "test:ai": "node dev-screenshot-tool.js page http://localhost:3000 --ai"
   },
   "dependencies": {
     "axios": "^1.10.0",

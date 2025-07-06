@@ -922,30 +922,58 @@ class DevScreenshotTool {
           await page.waitForTimeout(this.options.tabDelay);
           await this.waitForContent(page);
           
-          // Take screenshot of this tab state
+          // Take comprehensive screenshots of this tab state (similar to regular page capture)
           const tabName = tab.text
             .replace(/[^a-zA-Z0-9\s]/g, '')
             .replace(/\s+/g, '_')
             .toLowerCase()
             .substring(0, 30) || `ai_tab_${i + 1}`;
+          
+          console.log(`   📸 Taking comprehensive screenshots for tab: "${tab.text}"`);
+          
+          // Reset scroll position for this tab
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await page.waitForTimeout(1000);
+          await this.waitForContent(page);
+
+          // Get page info for this tab state
+          const pageInfo = await page.evaluate(() => {
+            const body = document.body;
+            const documentElement = document.documentElement;
             
-          const filename = `${String(this.screenshotCount + 1).padStart(3, '0')}_${baseName}_ai_tab_${tabName}_${timestamp}.png`;
-          const filepath = path.join(this.options.outputDir, filename);
-          
-          // Use AI strategy for screenshot type
-          const screenshotOptions = { 
-            path: filepath, 
-            type: 'png'
-          };
-          
-          if (screenshotStrategy.screenshotApproach === 'full-page') {
-            screenshotOptions.fullPage = true;
-          } else {
-            screenshotOptions.fullPage = false;
-          }
-          
-          await page.screenshot(screenshotOptions);
-          
+            // Find scrollable containers
+            const scrollableContainers = Array.from(document.querySelectorAll('*')).filter(el => {
+              const style = getComputedStyle(el);
+              return (style.overflow === 'auto' || style.overflow === 'scroll' || style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                     el.scrollHeight > el.clientHeight &&
+                     el.clientHeight > 200;
+            });
+            
+            return {
+              windowScrollHeight: Math.max(body.scrollHeight, documentElement.scrollHeight),
+              windowClientHeight: Math.max(body.clientHeight, documentElement.clientHeight),
+              viewportHeight: window.innerHeight,
+              hasScrollableContainers: scrollableContainers.length > 0,
+              scrollableContainers: scrollableContainers.map(el => ({
+                tagName: el.tagName,
+                className: el.className,
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight
+              }))
+            };
+          });
+
+          let currentScroll = 0;
+          let screenshotIndex = 0;
+          const maxScroll = Math.max(
+            pageInfo.windowScrollHeight - pageInfo.windowClientHeight,
+            pageInfo.windowScrollHeight - pageInfo.viewportHeight
+          );
+
+          // Take initial screenshot (top of tab content)
+          const topFilename = `${String(this.screenshotCount + 1).padStart(3, '0')}_${baseName}_ai_tab_${tabName}_top_${timestamp}.png`;
+          const topFilepath = path.join(this.options.outputDir, topFilename);
+          await page.screenshot({ path: topFilepath, type: 'png', fullPage: false });
           this.screenshotCount++;
           results.push({ 
             type: 'ai-tab', 
@@ -953,13 +981,102 @@ class DevScreenshotTool {
             tab_name: tab.text, 
             tab_index: i + 1,
             confidence: tab.confidence,
-            filename,
+            filename: topFilename,
             ai_reason: tab.reason,
             click_method: 'ai-guided',
-            screenshot_strategy: screenshotStrategy.screenshotApproach
+            screenshot_type: 'top'
+          });
+          console.log(`   ✅ Tab top screenshot saved: ${topFilename}`);
+          screenshotIndex++;
+
+          // Take scroll screenshots for this tab if needed
+          if (maxScroll > 100 || pageInfo.hasScrollableContainers) {
+            console.log(`   🔄 Taking scroll screenshots for tab "${tab.text}" (max scroll: ${maxScroll}px)`);
+            
+            let totalScrollSteps = Math.max(
+              Math.ceil(maxScroll / this.options.scrollStep),
+              pageInfo.hasScrollableContainers ? Math.ceil((pageInfo.scrollableContainers[0]?.scrollHeight - pageInfo.scrollableContainers[0]?.clientHeight || 0) / this.options.scrollStep) : 0
+            );
+            
+            totalScrollSteps = Math.min(totalScrollSteps, this.options.maxScrollScreenshots - 1);
+            
+            for (let step = 1; step <= totalScrollSteps; step++) {
+              if (screenshotIndex >= this.options.maxScrollScreenshots) break;
+              
+              // Calculate scroll position
+              if (maxScroll > 100) {
+                currentScroll = Math.min((step * this.options.scrollStep), maxScroll);
+                await page.evaluate((scrollY) => {
+                  window.scrollTo({ top: scrollY, behavior: 'smooth' });
+                }, currentScroll);
+              } else if (pageInfo.hasScrollableContainers) {
+                const container = pageInfo.scrollableContainers[0];
+                const containerMaxScroll = container.scrollHeight - container.clientHeight;
+                currentScroll = Math.min((step * this.options.scrollStep), containerMaxScroll);
+                
+                await page.evaluate((params) => {
+                  const { scrollY } = params;
+                  const containers = Array.from(document.querySelectorAll('main, [class*="overflow"], [class*="scroll"]')).filter(el => {
+                    const style = getComputedStyle(el);
+                    return (style.overflow === 'auto' || style.overflow === 'scroll' || style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                           el.scrollHeight > el.clientHeight;
+                  });
+                  
+                  if (containers.length > 0) {
+                    const mainContainer = containers.find(c => c.tagName === 'MAIN') || containers[0];
+                    mainContainer.scrollTo({ top: scrollY, behavior: 'smooth' });
+                  } else {
+                    window.scrollTo({ top: scrollY, behavior: 'smooth' });
+                  }
+                }, { scrollY: currentScroll });
+              }
+
+              // Wait for scroll to complete
+              await page.waitForTimeout(this.options.scrollDelay);
+              await this.waitForContent(page);
+
+              const scrollFilename = `${String(this.screenshotCount + 1).padStart(3, '0')}_${baseName}_ai_tab_${tabName}_scroll_${currentScroll}px_${timestamp}.png`;
+              const scrollFilepath = path.join(this.options.outputDir, scrollFilename);
+              await page.screenshot({ path: scrollFilepath, type: 'png', fullPage: false });
+              this.screenshotCount++;
+              results.push({ 
+                type: 'ai-tab', 
+                url, 
+                tab_name: tab.text, 
+                tab_index: i + 1,
+                confidence: tab.confidence,
+                filename: scrollFilename,
+                ai_reason: tab.reason,
+                click_method: 'ai-guided',
+                screenshot_type: 'scroll',
+                scroll_position: currentScroll
+              });
+              console.log(`   ✅ Tab scroll screenshot saved: ${scrollFilename} (${currentScroll}px)`);
+              screenshotIndex++;
+            }
+          }
+
+          // Take full page screenshot for this tab
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await page.waitForTimeout(1000);
+          
+          const fullPageFilename = `${String(this.screenshotCount + 1).padStart(3, '0')}_${baseName}_ai_tab_${tabName}_fullpage_${timestamp}.png`;
+          const fullPageFilepath = path.join(this.options.outputDir, fullPageFilename);
+          await page.screenshot({ path: fullPageFilepath, type: 'png', fullPage: true });
+          this.screenshotCount++;
+          results.push({ 
+            type: 'ai-tab', 
+            url, 
+            tab_name: tab.text, 
+            tab_index: i + 1,
+            confidence: tab.confidence,
+            filename: fullPageFilename,
+            ai_reason: tab.reason,
+            click_method: 'ai-guided',
+            screenshot_type: 'fullpage'
           });
           
-          console.log(`   ✅ AI-guided tab screenshot saved: ${filename}`);
+          console.log(`   ✅ AI-guided tab fullpage screenshot saved: ${fullPageFilename}`);
           
           // Additional captures if AI recommends them
           if (screenshotStrategy.additionalCaptures?.length > 0 && i === 0) {
@@ -1817,16 +1934,18 @@ class DevScreenshotTool {
       
       // Note: Login will be attempted automatically when pages redirect to login
       
-      // Show what intelligence mode we're using
+      // Show what mode we're using
       if (this.options.useAI && this.aiAnalyzer) {
         console.log(`🧠 Starting AI-powered ${mode} mode...`);
         console.log(`   Using: ${this.options.aiModel}`);
-      } else if (this.options.openrouterApiKey) {
-        console.log(`⚠️ AI configured but not enabled - check your config`);
-        console.log(`🔧 Starting traditional ${mode} mode...`);
       } else {
-        console.log(`🔧 Starting traditional ${mode} mode...`);
-        console.log(`💡 Add OpenRouter API key for AI-powered intelligence`);
+        console.log(`⚡ Starting fast ${mode} mode...`);
+        if (this.options.handleTabs) {
+          console.log(`   Tab detection: enabled`);
+        }
+        if (this.options.openrouterApiKey && !this.options.useAI) {
+          console.log(`💡 Use --ai flag to enable AI features`);
+        }
       }
       
       switch (mode) {
@@ -1879,14 +1998,14 @@ async function main() {
   
   if (args.length === 0) {
     console.log(`
-🧠 AI-Powered Web Application Screenshot Tool
+📸 Fast Web Application Screenshot Tool
 
-Intelligent navigation and screenshot capture for any web application.
-Uses AI to understand page structure, detect tabs, and navigate smartly.
+Quick and efficient screenshot capture for any web application.
+Fast scrolling and comprehensive page coverage by default.
 
 Core Commands:
-  node dev-screenshot-tool.js page [url]              Smart page screenshots
-  node dev-screenshot-tool.js crawl [url]             Intelligent site crawling
+  node dev-screenshot-tool.js page [url]              Fast page screenshots
+  node dev-screenshot-tool.js crawl [url]             Site crawling
   node dev-screenshot-tool.js element <selector> [url] Screenshot specific element
   node dev-screenshot-tool.js region <x,y,w,h> [url]   Screenshot specific region
 
@@ -1897,38 +2016,105 @@ Element Shortcuts:
   node dev-screenshot-tool.js hero [url]              Hero section screenshots
   node dev-screenshot-tool.js sidebar [url]           Sidebar screenshots
 
-🧠 AI Intelligence (when API key provided):
-  ✨ Smart tab detection - understands real tabs vs other elements
-  ✨ Visual page analysis - sees what humans see
-  ✨ Context-aware navigation - knows what to click and what to avoid
-  ✨ Adaptive screenshot strategies - optimizes capture approach per page
-  ✨ Automatic fallback - uses traditional methods if AI fails
+Options:
+  --ai, -a                    Enable AI-powered features (slower but smarter)
+  --tabs, -t                  Enable tab detection and clicking
+  --help, -h                  Show this help message
 
 Examples:
-  # Smart page capture (automatically handles tabs, modals, etc.)
+  # Fast page capture (default - no AI, just scrolling)
   node dev-screenshot-tool.js page /dashboard
 
-  # Intelligent site crawling with AI navigation
-  node dev-screenshot-tool.js crawl
+  # AI-powered page capture with tab detection
+  node dev-screenshot-tool.js page /dashboard --ai
+
+  # Site crawling with AI navigation
+  node dev-screenshot-tool.js crawl --ai
 
   # Quick element capture
   node dev-screenshot-tool.js nav /admin
 
 Setup:
-1. Create screenshot-config.json with your settings
-2. Add your OpenRouter API key for AI features (optional but recommended)
+1. Copy screenshot-config.example.json to screenshot-config.json
+2. Edit with your settings (optional - works with defaults)
+3. Add OpenRouter API key for AI features (optional)
 
 Sample config:
 {
   "baseUrl": "http://localhost:3000",
-  "ai": {
-    "enabled": true,
-    "openrouterApiKey": "your-api-key-here"
-  },
   "authentication": { "required": true, "loginUrl": "...", "credentials": {...} }
 }
+`);
+    return;
+  }
 
-Or set environment variable: export OPENROUTER_API_KEY="your-api-key"
+  // Parse command line arguments
+  const parsedArgs = [];
+  const flags = {};
+  
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      const flag = arg.slice(2);
+      flags[flag] = true;
+    } else if (arg.startsWith('-') && arg.length === 2) {
+      const flag = arg.slice(1);
+      if (flag === 'a') flags.ai = true;
+      else if (flag === 't') flags.tabs = true;
+      else if (flag === 'h') flags.help = true;
+    } else {
+      parsedArgs.push(arg);
+    }
+  }
+  
+  if (flags.help) {
+    console.log(`
+📸 Fast Web Application Screenshot Tool
+
+Quick and efficient screenshot capture for any web application.
+Fast scrolling and comprehensive page coverage by default.
+
+Core Commands:
+  node dev-screenshot-tool.js page [url]              Fast page screenshots
+  node dev-screenshot-tool.js crawl [url]             Site crawling
+  node dev-screenshot-tool.js element <selector> [url] Screenshot specific element
+  node dev-screenshot-tool.js region <x,y,w,h> [url]   Screenshot specific region
+
+Element Shortcuts:
+  node dev-screenshot-tool.js nav [url]               Navigation screenshots
+  node dev-screenshot-tool.js header [url]            Header screenshots
+  node dev-screenshot-tool.js footer [url]            Footer screenshots
+  node dev-screenshot-tool.js hero [url]              Hero section screenshots
+  node dev-screenshot-tool.js sidebar [url]           Sidebar screenshots
+
+Options:
+  --ai, -a                    Enable AI-powered features (slower but smarter)
+  --tabs, -t                  Enable tab detection and clicking
+  --help, -h                  Show this help message
+
+Examples:
+  # Fast page capture (default - no AI, just scrolling)
+  node dev-screenshot-tool.js page /dashboard
+
+  # AI-powered page capture with tab detection
+  node dev-screenshot-tool.js page /dashboard --ai
+
+  # Site crawling with AI navigation
+  node dev-screenshot-tool.js crawl --ai
+
+  # Quick element capture
+  node dev-screenshot-tool.js nav /admin
+
+Setup:
+1. Copy screenshot-config.example.json to screenshot-config.json
+2. Edit with your settings (optional - works with defaults)
+3. Add OpenRouter API key for AI features (optional)
+
+Sample config:
+{
+  "baseUrl": "http://localhost:3000",
+  "authentication": { "required": true, "loginUrl": "...", "credentials": {...} }
+}
 `);
     return;
   }
@@ -1936,8 +2122,8 @@ Or set environment variable: export OPENROUTER_API_KEY="your-api-key"
   // Load configuration
   const config = await loadConfig();
   
-  const mode = args[0];
-  let target = args[1];
+  const mode = parsedArgs[0];
+  let target = parsedArgs[1];
   
   // Convert config to tool options
   const options = {
@@ -1954,16 +2140,16 @@ Or set environment variable: export OPENROUTER_API_KEY="your-api-key"
     maxScrollScreenshots: config.screenshots?.maxScrollScreenshots || 10,
     excludePatterns: config.crawling?.excludePatterns || ['/api/', '.pdf', '.zip'],
     
-    // Tab handling options
-    handleTabs: config.tabs?.enabled !== false,
-    tabSelectors: config.tabs?.selectors || undefined, // Use defaults if not specified
+    // Tab handling options - only enable if explicitly requested
+    handleTabs: flags.tabs || flags.ai,
+    tabSelectors: config.tabs?.selectors || undefined,
     tabContainerSelectors: config.tabs?.containerSelectors || undefined,
     tabDelay: config.tabs?.delay || 1500,
     maxTabsPerPage: config.tabs?.maxPerPage || 10,
     
-    // AI options
+    // AI options - only enable if explicitly requested
     openrouterApiKey: config.ai?.openrouterApiKey || process.env.OPENROUTER_API_KEY,
-    useAI: config.ai?.enabled !== false && (config.ai?.openrouterApiKey || process.env.OPENROUTER_API_KEY),
+    useAI: flags.ai && (config.ai?.openrouterApiKey || process.env.OPENROUTER_API_KEY),
     aiModel: config.ai?.model || 'deepseek/deepseek-chat-v3-0324:free'
   };
 
